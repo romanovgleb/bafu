@@ -245,12 +245,15 @@ def iso_rcost(pt_gdf: gpd.GeoDataFrame, timestep_min: list, G=False, mode='pedes
 
 
 def iso_sausage(G, pt_start: shapely.geometry.Point, ttime_minutes: list,
-                travel_speed_kph=4.5, infill=True, conn_speed_kph=3.0,
+                travel_speed_kph=4.5, infill=True, conn_speed_kph=None,
                 squash=True, edge_buff=15, node_buff=0, CRS=4326,
                 network_type='walk'):
     '''
     G: expects an un-projected graph
     '''
+
+    import osmnx as ox
+    import networkx as nx
     # project graph, gather utm data
     G = ox.project_graph(G)
     UTM = G.graph['crs']
@@ -264,6 +267,14 @@ def iso_sausage(G, pt_start: shapely.geometry.Point, ttime_minutes: list,
     # find closest graph edge to pt_start_utm = edge_nearest
     edge_nearest, conn_length_m = ox.distance.nearest_edges(
         G, pt_start_utm.x, pt_start_utm.y, return_dist=True)
+
+    # if nearest edge has no geometry - add it
+    if 'geometry' not in G.edges[edge_nearest]:
+        G.edges[edge_nearest]['geometry'] = shapely.geometry.LineString(
+            [shapely.geometry.Point(x, y) for x, y in [(G.nodes[edge_nearest[0]]['x'],
+                                                        G.nodes[edge_nearest[0]]['y']),
+                                                       (G.nodes[edge_nearest[1]]['x'],
+                                                        G.nodes[edge_nearest[1]]['y'])]])
     
     # find point on that edge closest to pt_start_utm = pt_conn_utm
     pt_conn_utm = shapely.ops.nearest_points(
@@ -330,6 +341,8 @@ def iso_sausage(G, pt_start: shapely.geometry.Point, ttime_minutes: list,
     else:
         G = ox.add_edge_speeds(G)
         G = ox.add_edge_travel_times(G)
+    if conn_speed_kph:  # adding proper time to connectors
+        G.edges['iso_pt_start', 'iso_pt_conn', 0]['time'] = G.edges['iso_pt_start', 'iso_pt_conn', 0]['length'] / (conn_speed_kph * 1000 / 60)
     
     # get sausage isochrones
     iso_poly_dict = dict(geometry=[], iso_time=[])
