@@ -1,13 +1,11 @@
-import math
-
 # import contextily as ctx # UNTIL CONTEXTILY IS INSTALLED
 import geopandas as gpd
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
+# import matplotlib.pyplot as plt
+# import numpy as np
 import shapely
-import time
-from tqdm import tqdm
+# import time
+# from tqdm import tqdm
+import pandas as pd
 pd.set_option('display.max_columns', 100)
 
 
@@ -67,6 +65,7 @@ def telegram(msg='default message', who='Gleb'):
 
 
 def gdf_utm_code(gdf):
+    import math
     '''returns epsg code from 4326 gdf'''
     
     def wgs_to_utm(lon: float, lat: float):
@@ -245,32 +244,116 @@ def iso_rcost(pt_gdf: gpd.GeoDataFrame, timestep_min: list, G=False, mode='pedes
     pass
 
 
-def iso_sausage(pt_gdf: gpd.GeoDataFrame, ttime_min: list, delete_holes=True):
+def iso_sausage(G, pt_start: shapely.geometry.Point, ttime_minutes: list,
+                travel_speed_kph=4.5, infill=True, conn_speed_kph=3.0,
+                squash=True, edge_buff=15, node_buff=0, CRS=4326,
+                network_type='walk'):
     '''
-    
+    G: expects an un-projected graph
     '''
-    
-    '''    
-    def iso_sausage(G_proj, trip_times: list, startpoint: shapely.geometry.Point,
-                    edge_buff=25, node_buff=50, infill=False):
-    isochrone_polys = []
-    for trip_time in sorted(trip_times, reverse=True):
-        startnode = ox.distance.nearest_nodes(G_proj, startpoint.x, startpoint.y)
-        subgraph = nx.ego_graph(G_proj, startnode, radius=trip_time, distance="time")
+    # project graph, gather utm data
+    G = ox.project_graph(G)
+    UTM = G.graph['crs']
 
+    # add startpoint as a node
+    pt_start_utm = gpd.GeoDataFrame(crs=CRS, geometry=[pt_start]).to_crs(
+        UTM).geometry.values[0]
+    G.add_node('iso_pt_start', x=pt_start_utm.x, y=pt_start_utm.y,
+               lon=pt_start.x, lat=pt_start.y)
+    
+    # find closest graph edge to pt_start_utm = edge_nearest
+    edge_nearest, conn_length_m = ox.distance.nearest_edges(
+        G, pt_start_utm.x, pt_start_utm.y, return_dist=True)
+    
+    # find point on that edge closest to pt_start_utm = pt_conn_utm
+    pt_conn_utm = shapely.ops.nearest_points(
+        pt_start_utm, G.edges[edge_nearest]['geometry'])[1]
+    
+    # make sure linestring object of nearest_edge could be split by pt_conn_utm
+    G.edges[edge_nearest]['geometry'] = shapely.ops.snap(
+        G.edges[edge_nearest]['geometry'], pt_conn_utm, 0.0001)
+    pt_conn = gpd.GeoDataFrame(crs=UTM, geometry=[pt_conn_utm]).to_crs(
+        CRS).geometry.values[0]
+    
+    # add node for pt_conn
+    G.add_node('iso_pt_conn', x=pt_conn_utm.x, y=pt_conn_utm.y,
+               lon=pt_conn.x, lat=pt_conn.y)
+    
+    # add edge from start node to pt_conn (individual speed); throw warning if length is big
+    if conn_length_m > 100:
+        warnings.warn(f'connector length for point {pt_start.wkt} is {round(conn_length_m)} m')
+    G.add_edge('iso_pt_start', 'iso_pt_conn', 0, length=conn_length_m,
+               geometry=shapely.geometry.LineString([pt_start_utm, pt_conn_utm]))
+    
+    # replace closest_edge with two edges
+    
+    # adding two (or four) replacement edges respecting the movement direction
+    # splitting linestring of edge_nearest into ls_left and ls_right
+    ls_collection = shapely.ops.split(G.edges[edge_nearest]['geometry'], pt_conn_utm)
+    assert len(list(ls_collection.geoms)) == 2, 'point has not split linestring well'
+    pt_left = shapely.geometry.Point(G.nodes[edge_nearest[0]]['x'],
+                                     G.nodes[edge_nearest[0]]['y'])
+    pt_right = shapely.geometry.Point(G.nodes[edge_nearest[1]]['x'],
+                                      G.nodes[edge_nearest[1]]['y'])
+    if list(ls_collection.geoms)[0].distance(pt_left) < 1e-8:
+        ls_left = list(ls_collection.geoms)[0]
+        ls_right = list(ls_collection.geoms)[1]
+    else:
+        ls_left = list(ls_collection.geoms)[1]
+        ls_right = list(ls_collection.geoms)[0]
+    assert (ls_left.distance(pt_left) < 1e-8) and (
+        ls_right.distance(pt_right) < 1e-8), 'error w/calc of edge_nearest geom'
+    
+    # either way we have to add two edges in direction of nearest_edge
+    G.add_edge(edge_nearest[0], 'iso_pt_conn', 0,
+               geometry=ls_left, length=ls_left.length)
+    G.add_edge('iso_pt_conn', edge_nearest[1], 0,
+               geometry=ls_right, length=ls_right.length)
+    # removing one edge_nearest
+    G.remove_edge(*edge_nearest)
+    
+    # checking if edge_nearest is bidirectional
+    if G.has_edge(edge_nearest[1], edge_nearest[0], 0):
+        # if bidirectional - also add the opposite direction
+        G.add_edge('iso_pt_conn', edge_nearest[0], 0,
+                   geometry=ls_left, length=ls_left.length)
+        G.add_edge(edge_nearest[1], 'iso_pt_conn', 0,
+                   geometry=ls_right, length=ls_right.length)
+        # removing another edge_nearest
+        G.remove_edge(edge_nearest[1], edge_nearest[0], 0)
+    
+    # add speeds and travel times
+    if network_type == 'walk':
+        meters_per_minute = travel_speed_kph * 1000 / 60  # km per hour to m per minute
+        for _, _, _, data in G.edges(data=True, keys=True):
+            data["time"] = data["length"] / meters_per_minute
+    else:
+        G = ox.add_edge_speeds(G)
+        G = ox.add_edge_travel_times(G)
+    
+    # get sausage isochrones
+    iso_poly_dict = dict(geometry=[], iso_time=[])
+    for trip_time in sorted(ttime_minutes, reverse=True):
+        iso_poly_dict['iso_time'].append(trip_time)
+        
+        # building subgraph of where we can go within trip_time
+        subgraph = nx.ego_graph(G, 'iso_pt_start', radius=trip_time, distance="time")
+        
+        # building gdf_nodes
         node_points = [shapely.geometry.Point((data["x"], data["y"])) for node, data in subgraph.nodes(data=True)]
-        nodes_gdf = gpd.GeoDataFrame({"id": list(subgraph.nodes)}, geometry=node_points)
-        nodes_gdf = nodes_gdf.set_index("id")
+        gdf_nodes = gpd.GeoDataFrame({"id": list(subgraph.nodes)}, geometry=node_points)
+        gdf_nodes = gdf_nodes.set_index("id")
 
+        # building edges
         edge_lines = []
         for n_fr, n_to in subgraph.edges():
-            f = nodes_gdf.loc[n_fr].geometry
-            t = nodes_gdf.loc[n_to].geometry
-            edge_lookup = G_proj.get_edge_data(n_fr, n_to)[0].get(
+            f = gdf_nodes.loc[n_fr].geometry
+            t = gdf_nodes.loc[n_to].geometry
+            edge_lookup = G.get_edge_data(n_fr, n_to)[0].get(
                 "geometry", shapely.geometry.LineString([f, t]))
             edge_lines.append(edge_lookup)
 
-        n = nodes_gdf.buffer(node_buff).geometry
+        n = gdf_nodes.buffer(node_buff).geometry
         e = gpd.GeoSeries(edge_lines).buffer(edge_buff).geometry
         all_gs = list(n) + list(e)
         new_iso = gpd.GeoSeries(all_gs).unary_union
@@ -279,10 +362,15 @@ def iso_sausage(pt_gdf: gpd.GeoDataFrame, ttime_min: list, delete_holes=True):
         # blocks without white space inside them
         if infill:
             new_iso = shapely.geometry.Polygon(new_iso.exterior)
-        isochrone_polys.append(new_iso)
-    return isochrone_polys
-    '''
-    pass
+        iso_poly_dict['geometry'].append(new_iso)
+        
+    # declare geodataframe
+    gdf_iso = gpd.GeoDataFrame(iso_poly_dict, crs=UTM, geometry='geometry')
+    
+    # if True: squash pyramid
+    if squash:
+        return squash_pyramid(gdf_iso, sort_col='iso_time')
+    return gdf_iso
 
 
 def iso_alpha(pt_gdf: gpd.GeoDataFrame, ttime_min: list):
