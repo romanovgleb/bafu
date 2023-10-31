@@ -7,6 +7,7 @@ import shapely
 # from tqdm import tqdm
 import pandas as pd
 pd.set_option('display.max_columns', 100)
+import warnings
 
 
 def pp(df, n=3):
@@ -134,7 +135,6 @@ def sjoin_lop_propsum(gdf_base, gdf_join, col_list):
     with largest overlap
     '''
     
-    import warnings
     
     if not gdf_base.index.is_unique:  # if we have a non-unique index - result will be faulty
         raise IndexError('base geodataframe index is not unique')
@@ -251,6 +251,8 @@ def iso_sausage(G, pt_start: shapely.geometry.Point, ttime_minutes: list,
     '''
     G: expects an un-projected graph
     '''
+    import osmnx as ox
+    import networkx as nx
     # project graph, gather utm data
     G = ox.project_graph(G)
     UTM = G.graph['crs']
@@ -258,69 +260,86 @@ def iso_sausage(G, pt_start: shapely.geometry.Point, ttime_minutes: list,
     # add startpoint as a node
     pt_start_utm = gpd.GeoDataFrame(crs=CRS, geometry=[pt_start]).to_crs(
         UTM).geometry.values[0]
+    # find nearest node before start node is created - we'll need it
+    # if we won't be able to split edge_nearest in two
+    node_nearest = ox.distance.nearest_nodes(G, pt_start_utm.x, pt_start_utm.y)
     G.add_node('iso_pt_start', x=pt_start_utm.x, y=pt_start_utm.y,
                lon=pt_start.x, lat=pt_start.y)
     
     # find closest graph edge to pt_start_utm = edge_nearest
     edge_nearest, conn_length_m = ox.distance.nearest_edges(
         G, pt_start_utm.x, pt_start_utm.y, return_dist=True)
+    if conn_length_m > 100:  # trow warning if connector length is too big
+        warnings.warn(f'connector length for point {pt_start.wkt} is {round(conn_length_m)} m')
     
     # find point on that edge closest to pt_start_utm = pt_conn_utm
+    n_fr = edge_nearest[0]
+    n_to = edge_nearest[1]
+    pt_fr = shapely.geometry.Point(G.nodes[n_fr]['x'], G.nodes[n_fr]['y'])
+    pt_to = shapely.geometry.Point(G.nodes[n_to]['x'], G.nodes[n_to]['y'])
+    edge_dict = G.get_edge_data(n_fr, n_to)
+    edge_lookup_near = edge_dict[min(edge_dict.keys())].get(
+        "geometry", shapely.geometry.LineString([pt_fr, pt_to]))
     pt_conn_utm = shapely.ops.nearest_points(
-        pt_start_utm, G.edges[edge_nearest]['geometry'])[1]
+        pt_start_utm, edge_lookup_near)[1]
     
     # make sure linestring object of nearest_edge could be split by pt_conn_utm
     G.edges[edge_nearest]['geometry'] = shapely.ops.snap(
-        G.edges[edge_nearest]['geometry'], pt_conn_utm, 0.0001)
+        edge_lookup_near, pt_conn_utm, 0.0001)
     pt_conn = gpd.GeoDataFrame(crs=UTM, geometry=[pt_conn_utm]).to_crs(
         CRS).geometry.values[0]
-    
-    # add node for pt_conn
-    G.add_node('iso_pt_conn', x=pt_conn_utm.x, y=pt_conn_utm.y,
-               lon=pt_conn.x, lat=pt_conn.y)
-    
-    # add edge from start node to pt_conn (individual speed); throw warning if length is big
-    if conn_length_m > 100:
-        warnings.warn(f'connector length for point {pt_start.wkt} is {round(conn_length_m)} m')
-    G.add_edge('iso_pt_start', 'iso_pt_conn', 0, length=conn_length_m,
-               geometry=shapely.geometry.LineString([pt_start_utm, pt_conn_utm]))
     
     # replace closest_edge with two edges
     
     # adding two (or four) replacement edges respecting the movement direction
     # splitting linestring of edge_nearest into ls_left and ls_right
     ls_collection = shapely.ops.split(G.edges[edge_nearest]['geometry'], pt_conn_utm)
-    assert len(list(ls_collection.geoms)) == 2, 'point has not split linestring well'
-    pt_left = shapely.geometry.Point(G.nodes[edge_nearest[0]]['x'],
-                                     G.nodes[edge_nearest[0]]['y'])
-    pt_right = shapely.geometry.Point(G.nodes[edge_nearest[1]]['x'],
-                                      G.nodes[edge_nearest[1]]['y'])
-    if list(ls_collection.geoms)[0].distance(pt_left) < 1e-8:
-        ls_left = list(ls_collection.geoms)[0]
-        ls_right = list(ls_collection.geoms)[1]
-    else:
-        ls_left = list(ls_collection.geoms)[1]
-        ls_right = list(ls_collection.geoms)[0]
-    assert (ls_left.distance(pt_left) < 1e-8) and (
-        ls_right.distance(pt_right) < 1e-8), 'error w/calc of edge_nearest geom'
-    
-    # either way we have to add two edges in direction of nearest_edge
-    G.add_edge(edge_nearest[0], 'iso_pt_conn', 0,
-               geometry=ls_left, length=ls_left.length)
-    G.add_edge('iso_pt_conn', edge_nearest[1], 0,
-               geometry=ls_right, length=ls_right.length)
-    # removing one edge_nearest
-    G.remove_edge(*edge_nearest)
-    
-    # checking if edge_nearest is bidirectional
-    if G.has_edge(edge_nearest[1], edge_nearest[0], 0):
-        # if bidirectional - also add the opposite direction
-        G.add_edge('iso_pt_conn', edge_nearest[0], 0,
+    # checking if we have connector facing from us (line will not be split)
+    # in that case, we draw connector edge to the nearest node to us
+    assert len(list(ls_collection.geoms)) in [1, 2], 'point has not split linestring into 1 or 2 parts'
+    if len(list(ls_collection.geoms)) == 1:  # when nearest edge is facing FROM us
+        G.add_edge('iso_pt_start', node_nearest, 0, length=conn_length_m,
+                   geometry=shapely.geometry.LineString([pt_start_utm, pt_conn_utm]))
+    elif len(list(ls_collection.geoms)) == 2:  # classic scenario - nearest node splits edge into 2 parts
+        # add node for pt_conn
+        G.add_node('iso_pt_conn', x=pt_conn_utm.x, y=pt_conn_utm.y,
+                   lon=pt_conn.x, lat=pt_conn.y)
+        
+        # add edge from start node to pt_conn (individual speed); throw warning if length is big
+        G.add_edge('iso_pt_start', 'iso_pt_conn', 0, length=conn_length_m,
+                   geometry=shapely.geometry.LineString([pt_start_utm, pt_conn_utm]))
+        pt_left = shapely.geometry.Point(G.nodes[edge_nearest[0]]['x'],
+                                         G.nodes[edge_nearest[0]]['y'])
+        pt_right = shapely.geometry.Point(G.nodes[edge_nearest[1]]['x'],
+                                          G.nodes[edge_nearest[1]]['y'])
+        if list(ls_collection.geoms)[0].distance(pt_left) < 1e-8:
+            ls_left = list(ls_collection.geoms)[0]
+            ls_right = list(ls_collection.geoms)[1]
+        else:
+            ls_left = list(ls_collection.geoms)[1]
+            ls_right = list(ls_collection.geoms)[0]
+        assert (ls_left.distance(pt_left) < 1e-8) and (
+            ls_right.distance(pt_right) < 1e-8), 'error w/calc of edge_nearest geom'
+        
+        # either way we have to add two edges in direction of nearest_edge
+        G.add_edge(edge_nearest[0], 'iso_pt_conn', 0,
                    geometry=ls_left, length=ls_left.length)
-        G.add_edge(edge_nearest[1], 'iso_pt_conn', 0,
+        G.add_edge('iso_pt_conn', edge_nearest[1], 0,
                    geometry=ls_right, length=ls_right.length)
-        # removing another edge_nearest
-        G.remove_edge(edge_nearest[1], edge_nearest[0], 0)
+        # removing one edge_nearest
+        G.remove_edge(*edge_nearest)
+        
+        # checking if edge_nearest is bidirectional
+        if G.has_edge(edge_nearest[1], edge_nearest[0], 0):
+            # if bidirectional - also add the opposite direction
+            G.add_edge('iso_pt_conn', edge_nearest[0], 0,
+                       geometry=ls_left, length=ls_left.length)
+            G.add_edge(edge_nearest[1], 'iso_pt_conn', 0,
+                       geometry=ls_right, length=ls_right.length)
+            # removing another edge_nearest
+            G.remove_edge(edge_nearest[1], edge_nearest[0], 0)
+    else:
+        raise ValueError(f'length of split string is {len(list(ls_collection.geoms))}')
     
     # add speeds and travel times
     if network_type == 'walk':
@@ -349,7 +368,8 @@ def iso_sausage(G, pt_start: shapely.geometry.Point, ttime_minutes: list,
         for n_fr, n_to in subgraph.edges():
             f = gdf_nodes.loc[n_fr].geometry
             t = gdf_nodes.loc[n_to].geometry
-            edge_lookup = G.get_edge_data(n_fr, n_to)[0].get(
+            edge_dict = G.get_edge_data(n_fr, n_to)
+            edge_lookup = edge_dict[min(edge_dict.keys())].get(
                 "geometry", shapely.geometry.LineString([f, t]))
             edge_lines.append(edge_lookup)
 
@@ -369,8 +389,8 @@ def iso_sausage(G, pt_start: shapely.geometry.Point, ttime_minutes: list,
     
     # if True: squash pyramid
     if squash:
-        return squash_pyramid(gdf_iso, sort_col='iso_time')
-    return gdf_iso
+        return squash_pyramid(gdf_iso, sort_col='iso_time').to_crs(4326)
+    return gdf_iso.to_crs(4326)
 
 
 def iso_alpha(pt_gdf: gpd.GeoDataFrame, ttime_min: list):
