@@ -1,7 +1,0 @@
-README.md
-bafu.py
-setup.py
-bafu.egg-info/PKG-INFO
-bafu.egg-info/SOURCES.txt
-bafu.egg-info/dependency_links.txt
-bafu.egg-info/top_level.txt
