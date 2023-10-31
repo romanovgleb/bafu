@@ -297,18 +297,24 @@ def iso_sausage(G, pt_start: shapely.geometry.Point, ttime_minutes: list,
     pt_conn = gpd.GeoDataFrame(crs=UTM, geometry=[pt_conn_utm]).to_crs(
         CRS).geometry.values[0]
     
-    # replace closest_edge with two edges
-    
-    # adding two (or four) replacement edges respecting the movement direction
-    # splitting linestring of edge_nearest into ls_left and ls_right
     ls_collection = shapely.ops.split(G.edges[edge_nearest]['geometry'], pt_conn_utm)
+    assert len(list(ls_collection.geoms)) in [1, 2], 'point has not split linestring into 1 or 2 parts'
+    if conn_speed_kph:
+        conn_time_local = conn_length_m / (conn_speed_kph * 1000 / 60)
+    else:
+        conn_time_local = conn_length_m / (travel_speed_kph * 1000 / 60)
+    
     # checking if we have connector facing from us (line will not be split)
     # in that case, we draw connector edge to the nearest node to us
-    assert len(list(ls_collection.geoms)) in [1, 2], 'point has not split linestring into 1 or 2 parts'
     if len(list(ls_collection.geoms)) == 1:  # when nearest edge is facing FROM us
         G.add_edge('iso_pt_start', node_nearest, 0, length=conn_length_m,
-                   geometry=shapely.geometry.LineString([pt_start_utm, pt_conn_utm]))
+                   geometry=shapely.geometry.LineString([pt_start_utm, pt_conn_utm]),
+                   time=conn_time_local)
     elif len(list(ls_collection.geoms)) == 2:  # classic scenario - nearest node splits edge into 2 parts
+        # replace closest_edge with two edges
+        
+        # adding two (or four) replacement edges respecting the movement direction
+        # splitting linestring of edge_nearest into ls_left and ls_right
         # add node for pt_conn
         G.add_node('iso_pt_conn', x=pt_conn_utm.x, y=pt_conn_utm.y,
                    lon=pt_conn.x, lat=pt_conn.y)
@@ -353,11 +359,12 @@ def iso_sausage(G, pt_start: shapely.geometry.Point, ttime_minutes: list,
     if network_type == 'walk':
         meters_per_minute = travel_speed_kph * 1000 / 60  # km per hour to m per minute
         for _, _, _, data in G.edges(data=True, keys=True):
-            data["time"] = data["length"] / meters_per_minute
+            if 'time' not in data:
+                data["time"] = data["length"] / meters_per_minute
     else:
         G = ox.add_edge_speeds(G)
         G = ox.add_edge_travel_times(G)
-    if conn_speed_kph:  # adding proper time to connectors
+    if conn_speed_kph and len(list(ls_collection.geoms)) == 2:  # adding proper time to connectors
         G.edges['iso_pt_start', 'iso_pt_conn', 0]['time'] = G.edges['iso_pt_start', 'iso_pt_conn', 0]['length'] / (conn_speed_kph * 1000 / 60)
     
     # get sausage isochrones
