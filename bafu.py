@@ -375,30 +375,38 @@ def iso_sausage(G, pt_start: shapely.geometry.Point, ttime_minutes: list,
         # building subgraph of where we can go within trip_time
         subgraph = nx.ego_graph(G, 'iso_pt_start', radius=trip_time, distance="time")
         
-        # building gdf_nodes
-        node_points = [shapely.geometry.Point((data["x"], data["y"])) for node, data in subgraph.nodes(data=True)]
-        gdf_nodes = gpd.GeoDataFrame({"id": list(subgraph.nodes)}, geometry=node_points)
-        gdf_nodes = gdf_nodes.set_index("id")
-
-        # building edges
-        edge_lines = []
-        for n_fr, n_to in subgraph.edges():
-            f = gdf_nodes.loc[n_fr].geometry
-            t = gdf_nodes.loc[n_to].geometry
-            edge_dict = G.get_edge_data(n_fr, n_to)
-            edge_lookup = edge_dict[min(edge_dict.keys())].get(
-                "geometry", shapely.geometry.LineString([f, t]))
-            edge_lines.append(edge_lookup)
-
-        n = gdf_nodes.buffer(node_buff).geometry
-        e = gpd.GeoSeries(edge_lines).buffer(edge_buff).geometry
-        all_gs = list(n) + list(e)
-        new_iso = gpd.GeoSeries(all_gs).unary_union
-
-        # try to fill in surrounded areas so shapes will appear solid and
-        # blocks without white space inside them
-        if infill:
-            new_iso = shapely.geometry.Polygon(new_iso.exterior)
+        if len(subgraph) > 1:
+            # building gdf_nodes
+            node_points = [shapely.geometry.Point((data["x"], data["y"])) for node, data in subgraph.nodes(data=True)]
+            gdf_nodes = gpd.GeoDataFrame({"id": list(subgraph.nodes)}, geometry=node_points)
+            gdf_nodes = gdf_nodes.set_index("id")
+    
+            # building edges
+            edge_lines = []
+            for n_fr, n_to in subgraph.edges():
+                f = gdf_nodes.loc[n_fr].geometry
+                t = gdf_nodes.loc[n_to].geometry
+                edge_dict = G.get_edge_data(n_fr, n_to)
+                edge_lookup = edge_dict[min(edge_dict.keys())].get(
+                    "geometry", shapely.geometry.LineString([f, t]))
+                edge_lines.append(edge_lookup)
+    
+            n = gdf_nodes.buffer(node_buff).geometry
+            e = gpd.GeoSeries(edge_lines).buffer(edge_buff).geometry
+            all_gs = list(n) + list(e)
+            new_iso = gpd.GeoSeries(all_gs).unary_union
+    
+            # try to fill in surrounded areas so shapes will appear solid and
+            # blocks without white space inside them
+            if infill:
+                if new_iso.geom_type=='Polygon':
+                    new_iso = shapely.geometry.MultiPolygon([shapely.geometry.Polygon(new_iso.exterior)])
+                elif new_iso.geom_type=='MultiPolygon':
+                    new_iso = shapely.geometry.MultiPolygon(
+                        [shapely.geometry.Polygon(p.exterior) for p in list(new_iso.geoms)])
+        else:  # if we have a subgraph with just a startpoint - replace it w/buffer
+            new_iso = pt_start_utm.buffer(trip_time * 0.8 * travel_speed_kph * 1000 / 60)
+        
         iso_poly_dict['geometry'].append(new_iso)
         
     # declare geodataframe
