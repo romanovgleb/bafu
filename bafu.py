@@ -270,7 +270,7 @@ def iso_sausage(G, pt_start: shapely.geometry.Point, ttime_minutes: list,
     edge_nearest, conn_length_m = ox.distance.nearest_edges(
         G, pt_start_utm.x, pt_start_utm.y, return_dist=True)
     if conn_length_m > 100:  # trow warning if connector length is too big
-        warnings.warn(f'connector length for point {pt_start.wkt} is {round(conn_length_m)} m')
+        warnings.warn(f'connector length for {pt_start.wkt} is {round(conn_length_m)} m')
 
     # if nearest edge has no geometry - add it
     if 'geometry' not in G.edges[edge_nearest]:
