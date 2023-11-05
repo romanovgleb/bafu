@@ -25,26 +25,25 @@ def pp(df, n=3):
     display(df.head(n))
     
     
-# UNTIL CONTEXTILY IS INSTALLED
-# def drw(gdf_list, *args, figsize=(8,8), **kwargs):
-#     '''
-#     Draw multiple GeoDataFrames on same ax. Pass plot kwargs either as parameters
-#     (if params are the same for all gdf's or there is only one gdf)
-#     or as dict list [dict(par='val1'), dict(par='val2')] etc.
-#     '''
-#     if type(gdf_list) != list:
-#         gdf_list = [gdf_list]
-#     fig, ax = plt.subplots(1,1, figsize=figsize)
-#     for idx, gdf in enumerate(gdf_list):
-#         if args:  # if we have a list of dicts
-#             gdf.to_crs(3857).plot(ax=ax, **args[0][idx])
-#         elif kwargs:  # if we have kwargs - one set of params
-#             if len(gdf_list) > 1:  # but more than 1 gdf - apply same set to all gdf's
-#                 gdf.to_crs(3857).plot(ax=ax, **kwargs)
-#         else:  # if we have no additional parameters
-#             gdf.to_crs(3857).plot(ax=ax)
-#     ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron)
-#     ax.set_axis_off()
+def drw(gdf_list, *args, figsize=(8,8), **kwargs):
+    '''
+    Draw multiple GeoDataFrames on same ax. Pass plot kwargs either as parameters
+    (if params are the same for all gdf's or there is only one gdf)
+    or as dict list [dict(par='val1'), dict(par='val2')] etc.
+    '''
+    if type(gdf_list) != list:
+        gdf_list = [gdf_list]
+    fig, ax = plt.subplots(1,1, figsize=figsize)
+    for idx, gdf in enumerate(gdf_list):
+        if args:  # if we have a list of dicts
+            gdf.to_crs(3857).plot(ax=ax, **args[0][idx])
+        elif kwargs:  # if we have kwargs - one set of params
+            if len(gdf_list) > 1:  # but more than 1 gdf - apply same set to all gdf's
+                gdf.to_crs(3857).plot(ax=ax, **kwargs)
+        else:  # if we have no additional parameters
+            gdf.to_crs(3857).plot(ax=ax)
+    ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron)
+    ax.set_axis_off()
     
     
 def construct_gdf(df, crs=4326, geom_col='geometry', wkb=True, **kwargs):
