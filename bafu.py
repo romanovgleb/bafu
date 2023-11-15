@@ -1,6 +1,4 @@
-# import contextily as ctx # UNTIL CONTEXTILY IS INSTALLED
 import geopandas as gpd
-# import matplotlib.pyplot as plt
 # import numpy as np
 import shapely
 # import time
@@ -31,6 +29,8 @@ def drw(gdf_list, *args, figsize=(8,8), **kwargs):
     (if params are the same for all gdf's or there is only one gdf)
     or as dict list [dict(par='val1'), dict(par='val2')] etc.
     '''
+    import contextily as ctx # UNTIL CONTEXTILY IS INSTALLED
+    import matplotlib.pyplot as plt
     if type(gdf_list) != list:
         gdf_list = [gdf_list]
     fig, ax = plt.subplots(1,1, figsize=figsize)
