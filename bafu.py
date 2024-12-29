@@ -56,6 +56,8 @@ def construct_gdf(df, crs=4326, geom_col='geometry', wkb=True, **kwargs):
     
     
 def telegram(msg='default message', who='Gleb'):
+    # after getting bot token, get chat id with this:
+    # f'https://api.telegram.org/bot{token}/getUpdates'
     import requests
     from cred import tg
     chat_id = tg[who][0]
